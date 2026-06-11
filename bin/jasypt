@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+# jasypt - Jasypt encryption/decryption tool
+# Usage: jasypt <type> <input> [optional named parameters]
+
+set -euo pipefail
+
+JASYPT_BIN=$(realpath "${0%/*}/../lib/jasypt-1.9.3/bin")
+
+# ---------------------------------------------------------------------------
+# Help function
+# ---------------------------------------------------------------------------
+show_help() {
+  cat <<EOF
+Usage:
+  $(basename "$0") <type> <input> [optional parameters]
+
+Required parameters (positional):
+  type    The action to perform. Allowed values:
+            encrypt  – Encrypts the given input text.
+            decrypt  – Decrypts the given (encrypted) text.
+            help     – Shows this help message.
+
+  input   The text to encrypt or decrypt.
+          When type=help this parameter is ignored and may be omitted.
+
+Optional named parameters:
+  --password=<value>
+      The password (secret) used for encryption/decryption.
+      Jasypt uses PBE (Password-Based Encryption).
+
+  --verbose=<true|false>
+      Prints detailed information about the operation (e.g. algorithm used,
+      salt, number of iterations). Default: false.
+
+  --algorithm=<value>
+      The PBE algorithm to use, e.g. "PBEWithMD5AndDES" or
+      "PBEWithHMACSHA512AndAES_256". Jasypt supports all algorithms provided
+      by the configured JCE provider.
+      Default: PBEWithMD5AndDES
+
+  --keyObtentionIterations=<number>
+      Number of hash iterations for key derivation (key stretching).
+      Higher values increase security against brute-force attacks but slow
+      down encryption/decryption.
+      Default: 1000
+
+  --saltGeneratorClassName=<fully qualified class name>
+      Fully qualified Java class name of the salt generator to use.
+      Known implementations:
+        org.jasypt.salt.RandomSaltGenerator      (default, recommended)
+        org.jasypt.salt.ZeroSaltGenerator
+        org.jasypt.salt.StringFixedSaltGenerator
+      Default: org.jasypt.salt.RandomSaltGenerator
+
+  --providerName=<name>
+      Name of the JCE security provider (e.g. "BC" for Bouncy Castle).
+      Used when a non-standard provider is required.
+
+  --providerClassName=<fully qualified class name>
+      Fully qualified Java class name of the JCE security provider.
+      Alternative to --providerName when the provider is not yet registered
+      (Jasypt will register it automatically).
+
+  --stringOutputType=<base64|hexadecimal>
+      Output format of the encrypted text.
+        base64      – Base64-encoded output (default, URL-unsafe).
+        hexadecimal – Hexadecimal output.
+      Default: base64
+
+  --ivGeneratorClassName=<fully qualified class name>
+      Fully qualified Java class name of the IV (Initialization Vector)
+      generator. Relevant for algorithms that require an IV (e.g. AES).
+      Known implementations:
+        org.jasypt.iv.RandomIvGenerator      (default for IV-based algorithms)
+        org.jasypt.iv.NoIvGenerator          (for algorithms without IV)
+      Default: org.jasypt.iv.NoIvGenerator
+
+Parameter format:
+  Named parameters can be specified in either of the following forms:
+    --key=value
+    key=value
+
+Examples:
+  $(basename "$0") encrypt "MySecret" --password=myPassword
+  $(basename "$0") decrypt "ENC_TEXT_HERE" --password=myPassword --algorithm=PBEWithMD5AndDES
+  $(basename "$0") help
+
+Further information:
+  https://github.com/jasypt/jasypt
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Parse parameters
+# ---------------------------------------------------------------------------
+
+# Required parameters
+TYPE=""
+INPUT=""
+
+# Optional named parameters (defaults)
+OPT_PASSWORD="${JASYPT_ENCRYPTOR_PASSWORD}"
+OPT_VERBOSE="false"
+OPT_ALGORITHM="PBEWITHHMACSHA512ANDAES_256"
+OPT_KEY_OBTENTION_ITERATIONS="1000"
+OPT_SALT_GENERATOR_CLASS_NAME="org.jasypt.salt.RandomSaltGenerator"
+OPT_PROVIDER_NAME=""
+OPT_PROVIDER_CLASS_NAME=""
+OPT_STRING_OUTPUT_TYPE="base64"
+OPT_IV_GENERATOR_CLASS_NAME="org.jasypt.iv.RandomIvGenerator"
+
+OPT_OPTIONALS=""
+if [[ -n "$OPT_PROVIDER_NAME" ]]; then
+  OPT_OPTIONALS="${OPT_OPTIONALS} providerName=\"$OPT_PROVIDER_NAME\""
+fi
+if [[ -n "$OPT_PROVIDER_CLASS_NAME" ]]; then
+  OPT_OPTIONALS="${OPT_OPTIONALS} providerClassName=\"$OPT_PROVIDER_CLASS_NAME\""
+fi
+
+
+# Counter for positional parameters
+_positional_count=0
+
+for arg in "$@"; do
+  # Detect named parameters: --key=value or key=value
+  if [[ "$arg" == --*=* ]]; then
+    key="${arg#--}"
+    key="${key%%=*}"
+    value="${arg#*=}"
+  elif [[ "$arg" == *=* && "$arg" != -* ]]; then
+    key="${arg%%=*}"
+    value="${arg#*=}"
+  else
+    # Positional parameter
+    _positional_count=$(( _positional_count + 1 ))
+    case $_positional_count in
+      1) TYPE="$arg" ;;
+      2) INPUT="$arg" ;;
+      *)
+        echo "ERROR: Too many positional parameters." >&2
+        echo "Usage: $(basename "$0") <type> <input> [optional parameters]" >&2
+        exit 1
+        ;;
+    esac
+    continue
+  fi
+
+  # Assign named parameter
+  case "$key" in
+    password)                key_var="OPT_PASSWORD" ;;
+    verbose)                 key_var="OPT_VERBOSE" ;;
+    algorithm)               key_var="OPT_ALGORITHM" ;;
+    keyObtentionIterations)  key_var="OPT_KEY_OBTENTION_ITERATIONS" ;;
+    saltGeneratorClassName)  key_var="OPT_SALT_GENERATOR_CLASS_NAME" ;;
+    providerName)            key_var="OPT_PROVIDER_NAME" ;;
+    providerClassName)       key_var="OPT_PROVIDER_CLASS_NAME" ;;
+    stringOutputType)        key_var="OPT_STRING_OUTPUT_TYPE" ;;
+    ivGeneratorClassName)    key_var="OPT_IV_GENERATOR_CLASS_NAME" ;;
+    *)
+      echo "WARNING: Unknown parameter '$key' will be ignored." >&2
+      continue
+      ;;
+  esac
+
+  printf -v "$key_var" '%s' "$value"
+done
+
+# ---------------------------------------------------------------------------
+# type=help – required parameters not needed
+# ---------------------------------------------------------------------------
+if [[ "$TYPE" == "help" ]]; then
+  show_help
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Validate required parameters
+# ---------------------------------------------------------------------------
+if [[ -z "$TYPE" ]]; then
+  echo "ERROR: The parameter <type> is missing." >&2
+  echo "Usage: $(basename "$0") <type> <input> [optional parameters]" >&2
+  exit 1
+fi
+
+case "$TYPE" in
+  encrypt|decrypt) ;;
+  *)
+    echo "ERROR: Invalid type '$TYPE'. Allowed values: encrypt, decrypt, help." >&2
+    exit 1
+    ;;
+esac
+
+if [[ -z "$INPUT" ]]; then
+  echo "ERROR: The parameter <input> is missing." >&2
+  echo "Usage: $(basename "$0") <type> <input> [optional parameters]" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Main logic
+# ---------------------------------------------------------------------------
+
+case "$TYPE" in
+  encrypt)
+    $JASYPT_BIN/encrypt.sh input="$INPUT" \
+      password="$OPT_PASSWORD" \
+      verbose="$OPT_VERBOSE" \
+      algorithm="$OPT_ALGORITHM" \
+      keyObtentionIterations="$OPT_KEY_OBTENTION_ITERATIONS" \
+      saltGeneratorClassName="$OPT_SALT_GENERATOR_CLASS_NAME" \
+      stringOutputType="$OPT_STRING_OUTPUT_TYPE" \
+      ivGeneratorClassName="$OPT_IV_GENERATOR_CLASS_NAME" \
+      $OPT_OPTIONALS
+    ;;
+  decrypt)
+    $JASYPT_BIN/decrypt.sh input="$INPUT" \
+      password="$OPT_PASSWORD" \
+      verbose="$OPT_VERBOSE" \
+      algorithm="$OPT_ALGORITHM" \
+      keyObtentionIterations="$OPT_KEY_OBTENTION_ITERATIONS" \
+      saltGeneratorClassName="$OPT_SALT_GENERATOR_CLASS_NAME" \
+      stringOutputType="$OPT_STRING_OUTPUT_TYPE" \
+      ivGeneratorClassName="$OPT_IV_GENERATOR_CLASS_NAME" \
+      $OPT_OPTIONALS
+    ;;
+esac
