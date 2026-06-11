@@ -127,7 +127,7 @@ for arg in "$@"; do
     key="${arg#--}"
     key="${key%%=*}"
     value="${arg#*=}"
-  elif [[ "$arg" == *=* && "$arg" != -* ]]; then
+  elif [[ "$arg" == *=* && "$arg" != -* && $_positional_count -ge 2 ]]; then
     key="${arg%%=*}"
     value="${arg#*=}"
   else
